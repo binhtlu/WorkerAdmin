@@ -19,6 +19,7 @@ import (
 )
 
 var MapPid = make(map[string]int)
+var MapCheckStatusPid = make(map[string]int)
 
 func HandlMessagers(wg *sync.WaitGroup) {
 	for {
@@ -192,6 +193,18 @@ func SendMessagesr(topic string, Messagers string) {
 		log.Fatal("failed to close writer:", err)
 	}
 }
+func checkProcess(pid int) bool {
+	out, err := exec.Command("kill", "-s", "0", strconv.Itoa(pid)).CombinedOutput()
+	if err != nil {
+		log.Println(err)
+	}
+
+	if string(out) == "" {
+		return true
+	}
+	return false
+
+}
 
 func ShowStateWoker(wg *sync.WaitGroup) {
 	for {
@@ -201,11 +214,20 @@ func ShowStateWoker(wg *sync.WaitGroup) {
 		if mess == true {
 			fmt.Println("vao")
 			keys := make([]string, 0, len(MapPid))
+			keys2 := make([]string, 0, len(keys))
+
 			for k := range MapPid {
 				keys = append(keys, k)
 			}
-			fmt.Println(keys)
-			tostring := strings.Join(keys, "")
+			for i := 0; i < len(keys); i++ {
+				if checkProcess(MapPid[keys[i]]) == false {
+					keys = append(keys[:i], keys[i+1:]...)
+				}
+			}
+			for i := 0; i < len(keys); i++ {
+				keys2 = append(keys2, keys[i]+":")
+			}
+			tostring := strings.Join(keys2, "")
 			fmt.Println(tostring)
 			fmt.Println("chuan bi gui")
 			SendMessagesr("responselistworker", tostring)
@@ -219,6 +241,10 @@ func ShowStateWoker2() {
 	if mess == true {
 		WritePid()
 	}
+}
+
+func CheckStatusPid() {
+
 }
 
 func main() {
