@@ -1,96 +1,19 @@
 package main
 
 import (
-	"bufio"
-	"bytes"
 	"context"
-	"encoding/gob"
 	"fmt"
 	"io/ioutil"
 	"log"
-	"os"
 	"os/exec"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/segmentio/kafka-go"
 )
 
 var MapPid = make(map[string]int)
-var MapCheckStatusPid = make(map[string]int)
-
-func HandlMessagers(wg *sync.WaitGroup) {
-	for {
-		r := kafka.NewReader(kafka.ReaderConfig{
-			Brokers:  []string{"localhost:9092"},
-			Topic:    "worker",
-			MinBytes: 10e3,
-			MaxBytes: 10e6,
-		})
-		r.SetOffset(kafka.LastOffset)
-
-		m, err := r.ReadMessage(context.Background())
-		if err != nil {
-			fmt.Println(err)
-		}
-		fmt.Println(string(m.Value))
-		cmnd, bskey := HandleString(string(m.Value))
-		fmt.Println(MapPid[bskey])
-		if cmnd == "close" {
-			head := "kill"
-			pid := strconv.Itoa(MapPid[bskey])
-			state := killProcess(head, pid)
-			if state == 1 {
-				delete(MapPid, bskey)
-				fmt.Println("Delete process success")
-				WritePid()
-			}
-		}
-		if cmnd == "open" && SetKey(bskey) == true {
-			go OnWorker(wg)
-			fmt.Println("Open worker")
-			pid := ReadPidWorker()
-			MapPid[bskey] = pid
-			fmt.Println(MapPid)
-			WritePid()
-		}
-		if err := r.Close(); err != nil {
-			log.Fatal("failed to close reader:", err)
-		}
-	}
-}
-
-func OnWorker(wg *sync.WaitGroup) {
-	cmnd := exec.Command("./worker")
-	_, err := cmnd.Output()
-	if err != nil {
-		fmt.Println(err)
-	}
-}
-
-func ReadPidWorker() int {
-	time.Sleep(400 * time.Millisecond)
-
-	data, err := ioutil.ReadFile("Pid.txt")
-	if err != nil {
-		fmt.Println(err)
-	}
-	pid, _ := strconv.Atoi(string(data))
-	return pid
-}
-
-func killProcess(cmnd, pid string) int {
-	key2 := " " + pid
-	fmt.Println(key2)
-	kill := exec.Command(cmnd, key2)
-	err := kill.Run()
-	if err != nil {
-		return 0
-	}
-	return 1
-}
 
 func findString(s, stringFind string, stringCount int) bool {
 	for i := 0; i < stringCount; i++ {
@@ -125,60 +48,59 @@ func HandleString(s string) (string, string) {
 	}
 	return cmnd, key
 }
-func PrintPid(Wg *sync.WaitGroup) {
-	fmt.Println(MapPid)
-}
 
-func SetKey(key string) bool {
-	_, ok := MapPid[key]
-	if key == "" {
-		return false
-	}
-	if ok == true {
-		return false
-	}
-	return true
-}
-func WritePid() {
+func ReadPidWorker() int {
+	time.Sleep(1000 * time.Millisecond)
 
-	keys := make([]string, 0, len(MapPid))
-	for k := range MapPid {
-		keys = append(keys, k)
-	}
-	buf := &bytes.Buffer{}
-	gob.NewEncoder(buf).Encode(keys)
-	bs := buf.Bytes()
-	fmt.Println(bs)
-	err := ioutil.WriteFile("../ServiceWorker/MapPid.txt", bs, 0777)
+	data, err := ioutil.ReadFile("Pid.txt")
 	if err != nil {
 		fmt.Println(err)
 	}
+	pid, _ := strconv.Atoi(string(data))
+	return pid
 }
-func ReceiveMessagers(toppic, value string) bool {
-	for {
 
+func AddPidtoMap(itemkey string, pid int) {
+	MapPid[itemkey] = pid
+}
+
+func OnWorker() error {
+	cmnd := exec.Command("./worker")
+	err := cmnd.Run()
+	if err != nil {
+		return err
+	}
+	return nil
+}
+func OffWorker(pid string) error {
+	cmnd := exec.Command("kill", " "+pid)
+	err := cmnd.Run()
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func ReadMessagers() string {
+	for {
+		fmt.Println("hello read messages")
 		r := kafka.NewReader(kafka.ReaderConfig{
 			Brokers:  []string{"localhost:9092"},
-			Topic:    toppic,
+			Topic:    "on-or-off-Worker",
 			MinBytes: 10e3,
 			MaxBytes: 10e6,
 		})
 		r.SetOffset(kafka.LastOffset)
-
 		m, err := r.ReadMessage(context.Background())
 		if err != nil {
-			fmt.Println(err)
+			panic(err)
 		}
-		if string(m.Value) == value {
-			return true
-		}
-		if string(m.Value) != value {
-			return false
-		}
+		value := string(m.Value)
+		return value
 	}
-
 }
-func SendMessagesr(topic string, Messagers string) {
+
+func WriteMessages(topic, Messagers string) {
 	partition := 0
 	conn, err := kafka.DialLeader(context.Background(), "tcp", "localhost:9092", topic, partition)
 	if err != nil {
@@ -193,103 +115,33 @@ func SendMessagesr(topic string, Messagers string) {
 		log.Fatal("failed to close writer:", err)
 	}
 }
-func checkProcess(pid int) bool {
-	out, err := exec.Command("kill", "-s", "0", strconv.Itoa(pid)).CombinedOutput()
-	if err != nil {
-		log.Println(err)
+
+func OnOffWorker() error {
+	messagers := ReadMessagers()
+	state, itemkey := HandleString(messagers)
+	pid := ReadPidWorker()
+	if state == "on" {
+		fmt.Println("Worker is running")
+		go OnWorker()
+		AddPidtoMap(itemkey, pid)
+		fmt.Println(MapPid)
+		// WriteMessages("onworker", "onworker")
 	}
-
-	if string(out) == "" {
-		return true
-	}
-	return false
-
-}
-
-func ShowStateWoker(wg *sync.WaitGroup) {
-	for {
-		fmt.Println("hello show")
-		mess := ReceiveMessagers("requetslistworker", "listworker")
-		fmt.Println(mess)
-		if mess == true {
-			fmt.Println("vao")
-			keys := make([]string, 0, len(MapPid))
-			keys2 := make([]string, 0, len(keys))
-
-			for k := range MapPid {
-				keys = append(keys, k)
-			}
-			for i := 0; i < len(keys); i++ {
-				if checkProcess(MapPid[keys[i]]) == false {
-					keys = append(keys[:i], keys[i+1:]...)
-				}
-			}
-			for i := 0; i < len(keys); i++ {
-				keys2 = append(keys2, keys[i]+":")
-			}
-			tostring := strings.Join(keys2, "")
-			fmt.Println(tostring)
-			fmt.Println("chuan bi gui")
-			SendMessagesr("responselistworker", tostring)
+	if state == "off" {
+		p := strconv.Itoa(pid)
+		err := OffWorker(p)
+		if err != nil {
+			panic(err)
 		}
+		fmt.Println("worker off " + p)
 	}
-}
-
-func ShowStateWoker2() {
-	mess := ReceiveMessagers("requetslistworker2", "listworker")
-	fmt.Println(mess)
-	if mess == true {
-		WritePid()
-	}
-}
-
-func CheckStatusPid() {
+	return nil
 
 }
 
 func main() {
-	scanner := bufio.NewScanner(os.Stdin)
-	var wg sync.WaitGroup
-	wg.Add(4)
-	go ShowStateWoker(&wg)
-	go HandlMessagers(&wg)
 	for {
-
-		fmt.Println("command open worker (open : bskey)")
-		fmt.Println("command close worker (close : pid)")
-		fmt.Println("command quit programs ( q )")
-		scanner.Scan()
-		line := scanner.Text()
-		countString := strings.Count(line, "") - 1
-		if line == "mappid" {
-			go PrintPid(&wg)
-		}
-
-		if findString(line, ":", countString) == true {
-			cmnd, key := HandleString(line)
-			fmt.Println(SetKey(key))
-			if cmnd == "open" && SetKey(key) == true {
-				go OnWorker(&wg)
-				fmt.Println("Open worker")
-				pid := ReadPidWorker()
-				MapPid[key] = pid
-				fmt.Println(MapPid)
-				WritePid()
-			}
-			if cmnd == "close" {
-				head := "kill"
-				pid := strconv.Itoa(MapPid[key])
-				state := killProcess(head, pid)
-				if state == 1 {
-					delete(MapPid, key)
-					WritePid()
-					fmt.Println("Delete process success")
-				}
-			}
-		}
-		if line == "q" {
-			os.Exit(1)
-		}
+		OnOffWorker()
 	}
 
 }
